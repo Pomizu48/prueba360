@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Prueba cabina 360</title>
+<style>
+:root{--bg:#fff;--fg:#14181f;--card:#eef0f4;--accent:#1f5eff;--muted:#5d6675}
+@media (prefers-color-scheme:dark){:root{--bg:#0e1116;--fg:#eef1f6;--card:#1a1f28;--muted:#98a2b3}}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;padding:16px;padding-top:max(16px,env(safe-area-inset-top));padding-bottom:max(24px,env(safe-area-inset-bottom));font:16px/1.45 -apple-system,system-ui,sans-serif;background:var(--bg);color:var(--fg);max-width:560px;margin-inline:auto}
+h1{font-size:22px;margin:0 0 6px}
+h2{font-size:17px;margin:28px 0 4px}
+.note{color:var(--muted);font-size:14px;margin:4px 0}
+label{display:block;font-size:13px;color:var(--muted);margin:12px 0 4px}
+select,input,button{width:100%;font:inherit;padding:12px;border-radius:12px;border:0;background:var(--card);color:var(--fg)}
+button{background:var(--accent);color:#fff;font-weight:600;margin-top:12px}
+button.sec{background:var(--card);color:var(--fg)}
+button:disabled{opacity:.4}
+video{display:block;width:100%;max-height:52vh;background:#000;border-radius:12px;margin-top:12px}
+pre{background:var(--card);padding:12px;border-radius:12px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:280px;overflow:auto}
+canvas{position:fixed;left:-9999px;top:0}
+</style>
+</head>
+<body>
+<h1>Prueba de cámara y boomerang</h1>
+<p class="note">Ábrela en Safari, en tu iPhone, y sigue los pasos en orden. Si la página se recarga sola durante el paso 3, Safari se quedó sin memoria: ese también es un resultado válido.</p>
+
+<h2>1. Cámara</h2>
+<label for="dev">Cámara</label>
+<select id="dev"><option value="environment">Trasera (automática)</option><option value="user">Frontal</option></select>
+<label for="res">Resolución pedida</label>
+<select id="res"><option value="1080x1920">1080×1920 (vertical)</option><option value="1920x1080">1920×1080 (horizontal)</option><option value="720x1280">720×1280 (vertical)</option></select>
+<label for="fps">Cuadros por segundo pedidos</label>
+<select id="fps"><option>30</option><option selected>60</option><option>120</option><option>240</option></select>
+<button id="start">Iniciar cámara</button>
+<video id="pv" playsinline muted autoplay></video>
+<p class="note">Después de iniciar, abre la lista de cámaras: si aparece el ultra gran angular, elígelo y vuelve a iniciar.</p>
+
+<h2>2. Grabar un clip</h2>
+<label for="dur">Duración (segundos, máximo 6)</label>
+<input id="dur" type="number" value="4.5" min="1" max="6" step="0.5" inputmode="decimal">
+<label for="cd">Cuenta regresiva (segundos)</label>
+<input id="cd" type="number" value="3" min="0" max="10" inputmode="numeric">
+<label for="br">Calidad de video (Mbps)</label>
+<select id="br"><option>8</option><option selected>12</option><option>15</option></select>
+<button id="rec" disabled>Grabar clip de prueba</button>
+<video id="clipv" playsinline controls hidden></video>
+
+<h2>3. Armar el boomerang</h2>
+<p class="note">Cámara lenta a la mitad de velocidad, ida y vuelta, a 30 fps. Prueba primero el modo comprimido y luego el de memoria.</p>
+<label for="mode">Cómo guardar los fotogramas</label>
+<select id="mode"><option value="jpeg">Comprimido (JPEG, usa poca memoria)</option><option value="bitmap">En memoria (más rápido, usa mucha memoria)</option></select>
+<label for="sc">Tamaño del boomerang</label>
+<select id="sc"><option value="1">Igual al clip (1080p)</option><option value="0.667">Reducido (720p)</option></select>
+<button id="boom" disabled>Armar boomerang</button>
+<video id="outv" playsinline controls loop hidden></video>
+<button id="share" class="sec" hidden>Compartir el boomerang</button>
+
+<h2>Resultados</h2>
+<pre id="log"></pre>
+<button id="copy" class="sec">Copiar resultados</button>
+<canvas id="cv"></canvas>
+
+<script>
+const $ = id => document.getElementById(id);
+const R = {};
+let stream = null, track = null, clip = null, finalBlob = null;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const mb = b => (b / 1048576).toFixed(1) + ' MB';
+function log(m){ const l = $('log'); l.textContent += m + '\n'; l.scrollTop = l.scrollHeight; }
+function pickMime(){
+  const c = ['video/mp4;codecs=avc1','video/mp4','video/webm;codecs=h264','video/webm;codecs=vp9','video/webm'];
+  return (window.MediaRecorder && c.find(t => MediaRecorder.isTypeSupported(t))) || '';
+}
+window.addEventListener('error', e => log('Error: ' + e.message));
+R.Dispositivo = navigator.userAgent;
+if (!navigator.mediaDevices || !window.MediaRecorder) log('Este navegador no permite cámara o grabación. Abre la página en Safari y con HTTPS.');
+
+function measureFps(v, ms = 2000){
+  return new Promise(res => {
+    if (!v.requestVideoFrameCallback) return res(NaN);
+    let n = 0, t0 = null;
+    const cb = now => {
+      if (t0 === null) t0 = now; else n++;
+      if (now - t0 < ms) v.requestVideoFrameCallback(cb); else res(n / ((now - t0) / 1000));
+    };
+    v.requestVideoFrameCallback(cb);
+  });
+}
+
+async function fillDevices(){
+  const sel = $('dev'), cur = sel.value;
+  const cams = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput');
+  sel.innerHTML = '<option value="environment">Trasera (automática)</option><option value="user">Frontal</option>' +
+    cams.map(d => '<option value="' + d.deviceId + '">' + (d.label || 'Cámara') + '</option>').join('');
+  sel.value = cur; if (!sel.value) sel.value = 'environment';
+  R['Cámaras detectadas'] = cams.map(d => d.label).join(' | ');
+  log('Cámaras detectadas: ' + R['Cámaras detectadas']);
+}
+
+async function startCam(){
+  try{
+    if (stream) stream.getTracks().forEach(t => t.stop());
+    const [w, h] = $('res').value.split('x').map(Number);
+    const fps = Number($('fps').value), dev = $('dev').value;
+    const v = { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } };
+    if (dev === 'user' || dev === 'environment') v.facingMode = { ideal: dev }; else v.deviceId = { exact: dev };
+    stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
+    track = stream.getVideoTracks()[0];
+    const pv = $('pv'); pv.srcObject = stream; await pv.play();
+    const s = track.getSettings();
+    R['Cámara en uso'] = track.label + ' | ' + s.width + 'x' + s.height + ' a ' + (s.frameRate || '?') + ' fps (pedido ' + w + 'x' + h + ' a ' + fps + ')';
+    log('Cámara en uso: ' + R['Cámara en uso']);
+    try{
+      const c = track.getCapabilities();
+      R['Máximo reportado'] = ((c.width && c.width.max) || '?') + 'x' + ((c.height && c.height.max) || '?') + ', fps hasta ' + ((c.frameRate && c.frameRate.max) || '?');
+      log('Máximo reportado: ' + R['Máximo reportado']);
+    }catch(e){ log('Safari no reportó las capacidades de la cámara.'); }
+    await fillDevices();
+    const f = await measureFps(pv);
+    R['FPS medidos en vivo'] = isNaN(f) ? 'no disponible' : f.toFixed(1);
+    log('FPS medidos en vivo: ' + R['FPS medidos en vivo']);
+    $('rec').disabled = false;
+  }catch(e){ log('ERROR de cámara: ' + e.name + ' ' + e.message); }
+}
+
+async function recordClip(){
+  const btn = $('rec');
+  try{
+    btn.disabled = true;
+    const dur = Math.min(6, Math.max(1, Number($('dur').value) || 4.5));
+    const cd = Number($('cd').value) || 0;
+    for (let i = cd; i > 0; i--){ btn.textContent = 'Empieza en ' + i; await sleep(1000); }
+    const mime = pickMime();
+    const rec = new MediaRecorder(stream, { mimeType: mime || undefined, videoBitsPerSecond: Number($('br').value) * 1e6 });
+    const ch = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) ch.push(e.data); };
+    const stopped = new Promise(r => rec.onstop = r);
+    rec.start();
+    btn.textContent = 'Grabando...';
+    await sleep(dur * 1000);
+    rec.stop(); await stopped;
+    clip = new Blob(ch, { type: rec.mimeType || mime });
+    R['Clip grabado'] = (rec.mimeType || mime || 'formato automático') + ' | ' + mb(clip.size) + ' | ' + dur + ' s | ' + $('br').value + ' Mbps pedidos';
+    log('Clip grabado: ' + R['Clip grabado']);
+    const cv = $('clipv'); cv.src = URL.createObjectURL(clip); cv.hidden = false;
+    $('boom').disabled = false;
+  }catch(e){ log('ERROR al grabar: ' + e.name + ' ' + e.message); }
+  btn.textContent = 'Grabar clip de prueba'; btn.disabled = false;
+}
+
+async function boomerang(){
+  const btn = $('boom'); btn.disabled = true; btn.textContent = 'Procesando...';
+  const T0 = performance.now();
+  let src = null;
+  try{
+    const mode = $('mode').value, sc = Number($('sc').value);
+    src = document.createElement('video');
+    src.muted = true; src.playsInline = true; src.setAttribute('playsinline', '');
+    src.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none';
+    document.body.appendChild(src);
+    src.src = URL.createObjectURL(clip);
+    await new Promise((ok, no) => { src.onloadedmetadata = ok; src.onerror = () => no(new Error('No se pudo leer el clip')); });
+    const W = Math.round(src.videoWidth * sc / 2) * 2, H = Math.round(src.videoHeight * sc / 2) * 2;
+    const cv = $('cv'); cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    ctx.drawImage(src, 0, 0, W, H);
+    const mime = pickMime();
+    const rec = new MediaRecorder(cv.captureStream(30), { mimeType: mime || undefined, videoBitsPerSecond: Number($('br').value) * 1e6 });
+    const ch = [];
+    rec.ondataavailable = e => { if (e.data && e.data.size) ch.push(e.data); };
+    const stopped = new Promise(r => rec.onstop = r);
+    const frames = [];
+
+    // Adelante, a la mitad de velocidad
+    const tF = performance.now();
+    await new Promise((ok, no) => {
+      const onFrame = () => {
+        ctx.drawImage(src, 0, 0, W, H);
+        if (mode === 'bitmap') frames.push(createImageBitmap(cv));
+        else frames.push(new Promise(r => cv.toBlob(r, 'image/jpeg', 0.92)));
+        if (!src.ended) src.requestVideoFrameCallback(onFrame);
+      };
+      src.onended = ok;
+      src.onerror = () => no(new Error('Error al reproducir el clip'));
+      rec.start();
+      src.playbackRate = 0.5;
+      src.play().then(() => src.requestVideoFrameCallback(onFrame)).catch(no);
+    });
+    const fwd = (performance.now() - tF) / 1000;
+    const n = frames.length;
+    const clipFps = isFinite(src.duration) && src.duration > 0 ? (n / src.duration).toFixed(1) : '?';
+    log('Adelante: ' + n + ' fotogramas en ' + fwd.toFixed(1) + ' s (el clip trae unos ' + clipFps + ' fps reales)');
+    const arr = await Promise.all(frames);
+
+    // Reversa a 30 fps
+    const tR = performance.now(); let late = 0;
+    for (let k = 0; k < n; k++){
+      let b = arr[n - 1 - k];
+      if (mode !== 'bitmap') b = await createImageBitmap(b);
+      ctx.drawImage(b, 0, 0, W, H);
+      if (b.close) b.close();
+      const wait = tR + (k + 1) * 1000 / 30 - performance.now();
+      if (wait > 0) await sleep(wait); else late++;
+    }
+    await sleep(150); rec.stop(); await stopped;
+    finalBlob = new Blob(ch, { type: rec.mimeType || mime });
+    const total = (performance.now() - T0) / 1000;
+    R['Boomerang (' + (mode === 'bitmap' ? 'memoria' : 'JPEG') + ', ' + W + 'x' + H + ')'] =
+      n * 2 + ' fotogramas | ' + mb(finalBlob.size) + ' | tiempo total ' + total.toFixed(1) + ' s | fotogramas tardíos en reversa: ' + late;
+    log('Boomerang listo: ' + mb(finalBlob.size) + ', tiempo total ' + total.toFixed(1) + ' s, fotogramas tardíos en reversa: ' + late);
+    const ov = $('outv');
+    ov.onloadedmetadata = () => { if (isFinite(ov.duration)) log('El video final dura ' + ov.duration.toFixed(1) + ' s'); };
+    ov.src = URL.createObjectURL(finalBlob); ov.hidden = false; $('share').hidden = false;
+  }catch(e){ log('ERROR en el boomerang: ' + e.name + ' ' + e.message + '. Prueba el modo comprimido o el tamaño reducido.'); }
+  if (src) src.remove();
+  btn.textContent = 'Armar boomerang'; btn.disabled = false;
+}
+
+async function shareFinal(){
+  try{
+    const ext = finalBlob.type.includes('mp4') ? 'mp4' : 'webm';
+    const f = new File([finalBlob], 'boomerang.' + ext, { type: finalBlob.type });
+    if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f] });
+    else log('Este navegador no permite compartir archivos.');
+  }catch(e){ if (e.name !== 'AbortError') log('ERROR al compartir: ' + e.name + ' ' + e.message); }
+}
+
+async function copyReport(){
+  const txt = Object.entries(R).map(([k, v]) => k + ': ' + v).join('\n');
+  try{ await navigator.clipboard.writeText(txt); log('Resultados copiados. Pégalos en el chat.'); }
+  catch(e){ log('No se pudo copiar. Toma una captura de esta sección.'); }
+}
+
+$('start').onclick = startCam;
+$('rec').onclick = recordClip;
+$('boom').onclick = boomerang;
+$('share').onclick = shareFinal;
+$('copy').onclick = copyReport;
+</script>
+</body>
+</html>
