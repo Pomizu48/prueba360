@@ -31,9 +31,11 @@ canvas{position:fixed;left:-9999px;top:0}
 <label for="dev">Cámara</label>
 <select id="dev"><option value="environment">Trasera (automática)</option><option value="user">Frontal</option></select>
 <label for="res">Resolución pedida</label>
-<select id="res"><option value="1080x1920">1080×1920 (vertical)</option><option value="1920x1080">1920×1080 (horizontal)</option><option value="720x1280">720×1280 (vertical)</option></select>
+<select id="res"><option value="1920x1080">1080×1920 vertical (recomendada)</option><option value="1080x1920">1920×1080 horizontal</option><option value="1280x720">720×1280 vertical (reducida)</option></select>
 <label for="fps">Cuadros por segundo pedidos</label>
 <select id="fps"><option>30</option><option selected>60</option><option>120</option><option>240</option></select>
+<label for="fx">Cómo pedir los fps</label>
+<select id="fx"><option value="ideal">Preferido (Safari decide)</option><option value="exact">Exacto (da error si no se puede)</option></select>
 <button id="start">Iniciar cámara</button>
 <video id="pv" playsinline muted autoplay></video>
 <p class="note">Después de iniciar, abre la lista de cámaras: si aparece el ultra gran angular, elígelo y vuelve a iniciar.</p>
@@ -105,7 +107,7 @@ async function startCam(){
     if (stream) stream.getTracks().forEach(t => t.stop());
     const [w, h] = $('res').value.split('x').map(Number);
     const fps = Number($('fps').value), dev = $('dev').value;
-    const v = { width: { ideal: w }, height: { ideal: h }, frameRate: { ideal: fps } };
+    const v = { width: { ideal: w }, height: { ideal: h }, frameRate: $('fx').value === 'exact' ? { exact: fps } : { ideal: fps } };
     if (dev === 'user' || dev === 'environment') v.facingMode = { ideal: dev }; else v.deviceId = { exact: dev };
     stream = await navigator.mediaDevices.getUserMedia({ video: v, audio: false });
     track = stream.getVideoTracks()[0];
@@ -172,12 +174,13 @@ async function boomerang(){
     const ch = [];
     rec.ondataavailable = e => { if (e.data && e.data.size) ch.push(e.data); };
     const stopped = new Promise(r => rec.onstop = r);
-    const frames = [];
+    const frames = [], ts = [];
 
     // Adelante, a la mitad de velocidad
     const tF = performance.now();
     await new Promise((ok, no) => {
       const onFrame = () => {
+        ts.push(performance.now());
         ctx.drawImage(src, 0, 0, W, H);
         if (mode === 'bitmap') frames.push(createImageBitmap(cv));
         else frames.push(new Promise(r => cv.toBlob(r, 'image/jpeg', 0.92)));
@@ -195,15 +198,21 @@ async function boomerang(){
     log('Adelante: ' + n + ' fotogramas en ' + fwd.toFixed(1) + ' s (el clip trae unos ' + clipFps + ' fps reales)');
     const arr = await Promise.all(frames);
 
-    // Reversa a 30 fps
-    const tR = performance.now(); let late = 0;
+    // Reversa con los mismos tiempos que la ida
+    const rel = ts.map(t => t - ts[0]), total = rel[n - 1];
+    log('Ida: ' + (n / (total / 1000)).toFixed(1) + ' fotogramas por segundo mostrados, ' + (total / 1000).toFixed(1) + ' s');
+    const dec = {};
+    const getB = i => mode === 'bitmap' ? arr[i] : (dec[i] || (dec[i] = createImageBitmap(arr[i])));
+    const tR = performance.now() + 300; let late = 0;
     for (let k = 0; k < n; k++){
-      let b = arr[n - 1 - k];
-      if (mode !== 'bitmap') b = await createImageBitmap(b);
+      const i = n - 1 - k;
+      for (let j = 1; j <= 4; j++) if (i - j >= 0) getB(i - j);
+      const b = await getB(i);
+      const wait = tR + (total - rel[i]) - performance.now();
+      if (wait > 0) await sleep(wait); else late++;
       ctx.drawImage(b, 0, 0, W, H);
       if (b.close) b.close();
-      const wait = tR + (k + 1) * 1000 / 30 - performance.now();
-      if (wait > 0) await sleep(wait); else late++;
+      delete dec[i];
     }
     await sleep(150); rec.stop(); await stopped;
     finalBlob = new Blob(ch, { type: rec.mimeType || mime });
