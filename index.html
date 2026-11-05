@@ -199,8 +199,8 @@ async function boomerang(){
     const arr = await Promise.all(frames);
 
     // Reversa con los mismos tiempos que la ida
-    const rel = ts.map(t => t - ts[0]), total = rel[n - 1];
-    log('Ida: ' + (n / (total / 1000)).toFixed(1) + ' fotogramas por segundo mostrados, ' + (total / 1000).toFixed(1) + ' s');
+    const rel = ts.map(t => t - ts[0]), idaMs = rel[n - 1];
+    log('Ida: ' + (n / (idaMs / 1000)).toFixed(1) + ' fotogramas por segundo mostrados, ' + (idaMs / 1000).toFixed(1) + ' s');
     const dec = {};
     const getB = i => mode === 'bitmap' ? arr[i] : (dec[i] || (dec[i] = createImageBitmap(arr[i])));
     const tR = performance.now() + 300; let late = 0;
@@ -208,7 +208,7 @@ async function boomerang(){
       const i = n - 1 - k;
       for (let j = 1; j <= 4; j++) if (i - j >= 0) getB(i - j);
       const b = await getB(i);
-      const wait = tR + (total - rel[i]) - performance.now();
+      const wait = tR + (idaMs - rel[i]) - performance.now();
       if (wait > 0) await sleep(wait); else late++;
       ctx.drawImage(b, 0, 0, W, H);
       if (b.close) b.close();
