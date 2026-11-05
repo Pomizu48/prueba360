@@ -38,7 +38,7 @@ video.v{width:100%;max-height:62vh;background:#000;border-radius:14px}
 </head>
 <body>
 <main id="home" class="screen">
-  <h1>Cabina 360 <small>v3</small></h1>
+  <h1>Cabina 360 <small>v5</small></h1>
   <div class="tabs"><button data-t="next">Próximamente</button><button data-t="live">En curso</button><button data-t="done">Completado</button></div>
   <ul id="list"></ul>
   <button class="p" id="new">+ Nuevo evento</button>
@@ -152,67 +152,49 @@ $('go').onclick=async()=>{
   try{
     for(let i=cur.cd;i>0;i--){$('cdn').textContent=i;$('cdn').hidden=false;await sleep(1000)}
     $('cdn').hidden=true;
-    const mime=pickMime(),rec=new MediaRecorder(stream,{mimeType:mime||undefined,videoBitsPerSecond:cur.q*1e6}),ch=[];
-    rec.ondataavailable=e=>e.data&&e.data.size&&ch.push(e.data);const done=new Promise(r=>rec.onstop=r);
-    rec.start();const t0=performance.now();$('tm').hidden=false;
+    // Los fotogramas se toman directo de la cámara mientras se graba (sin volver a cargar un clip)
+    const cam=$('cam'),cap=document.createElement('canvas');cap.width=cam.videoWidth;cap.height=cam.videoHeight;
+    const cc=cap.getContext('2d'),fr=[],ts=[];let on=true;
+    const f=()=>{if(!on)return;ts.push(performance.now());cc.drawImage(cam,0,0);fr.push(new Promise(r=>cap.toBlob(r,'image/jpeg',.9)));cam.requestVideoFrameCallback(f)};
+    cam.requestVideoFrameCallback(f);
+    const t0=performance.now();$('tm').hidden=false;
     const iv=setInterval(()=>$('tm').textContent=((performance.now()-t0)/1000).toFixed(1),100);
-    await sleep(cur.dur*1000);clearInterval(iv);rec.stop();await done;$('tm').hidden=true;
-    const clip=new Blob(ch,{type:rec.mimeType||mime});
+    await sleep(cur.dur*1000);on=false;clearInterval(iv);$('tm').hidden=true;
     show('proc');$('pmsg').textContent='Preparando el video...';
-    fin=await boom(clip);stopCam();
+    fin=await boom(fr,ts);stopCam();
     $('pv').src=URL.createObjectURL(fin);show('prev');
   }catch(e){alert('Error: '+e.message);stopCam();panel()}
   busy=false;
 };
 
 // Boomerang: cámara lenta a la mitad de velocidad, ida y vuelta, 1080x1920 a 30 fps
-async function boom(blob){
-  const src=document.createElement('video'),url=URL.createObjectURL(blob);
-  src.muted=true;src.playsInline=true;src.setAttribute('playsinline','');src.preload='auto';
-  src.style.cssText='display:block;width:42%;margin:24px auto 0;border-radius:14px;background:#000';
-  $('proc').append(src);src.src=url;src.load();
-  try{
-    await new Promise((ok,no)=>{
-      let k=0;const t=setInterval(()=>{k++;
-        if(src.readyState>=1){clearInterval(t);ok()}
-        else if(k===6)src.play().catch(()=>{});
-        else if(k>=30){clearInterval(t);no(new Error('El clip no cargó (estado '+src.readyState+')'))}
-      },250);
-      src.onerror=()=>{clearInterval(t);no(new Error('No se pudo leer el clip'))};
-    });
-    src.pause();src.currentTime=0;
-    const SW=src.videoWidth,SH=src.videoHeight,[W,H]=SW>SH?[1920,1080]:[1080,1920];
-    const cap=document.createElement('canvas');cap.width=SW;cap.height=SH;const cc=cap.getContext('2d');
-    const cv=$('cv');cv.width=W;cv.height=H;const ctx=cv.getContext('2d');ctx.imageSmoothingQuality='high';ctx.drawImage(src,0,0,W,H);
-    const mime=pickMime(),rec=new MediaRecorder(cv.captureStream(30),{mimeType:mime||undefined,videoBitsPerSecond:cur.q*1e6}),ch=[];
-    rec.ondataavailable=e=>e.data&&e.data.size&&ch.push(e.data);const stopped=new Promise(r=>rec.onstop=r);
-    const fr=[],ts=[];$('pmsg').textContent='Capturando la cámara lenta...';
-    await new Promise((ok,no)=>{
-      const f=()=>{ts.push(performance.now());cc.drawImage(src,0,0);fr.push(new Promise(r=>cap.toBlob(r,'image/jpeg',.92)));if(!src.ended)src.requestVideoFrameCallback(f)};
-      src.onended=ok;src.onerror=()=>no(new Error('Error al reproducir el clip'));src.playbackRate=.5;
-      src.play().then(()=>src.requestVideoFrameCallback(f)).catch(no);
-    });
-    const n=fr.length;if(n<2)throw new Error('El clip quedó muy corto');
-    const arr=await Promise.all(fr),rel=ts.map(t=>t-ts[0]),ida=rel[n-1],blend=n/(ida/1000)<22;
-    const dec={},gb=i=>dec[i]||(dec[i]=createImageBitmap(arr[i]));
-    const prune=i=>{for(const k in dec)if(Math.abs(k-i)>6){dec[k].then(b=>b.close&&b.close());delete dec[k]}};
-    const idx=t=>{let lo=0,hi=n-1;while(hi-lo>1){const m=(lo+hi)>>1;if(rel[m]<=t)lo=m;else hi=m}return lo};
-    const ST=1000/30,M=Math.floor(ida/ST);
-    rec.start();const tR=performance.now()+200;
-    for(let j=0;j<=2*M;j++){
-      const tt=j*ST,fw=tt<=ida,st=fw?tt:Math.max(0,2*ida-tt),i=idx(st),i2=Math.min(i+1,n-1);
-      const a=i2===i?0:(st-rel[i])/(rel[i2]-rel[i]);
-      for(let q=0;q<=3;q++){const z=i+(fw?q:-q);if(z>=0&&z<n)gb(z)}gb(i2);
-      const b1=await gb(i),b2=blend&&a>.05&&i2!==i?await gb(i2):null;
-      const w=tR+tt-performance.now();if(w>0)await sleep(w);
-      ctx.globalAlpha=1;ctx.drawImage(b1,0,0,W,H);
-      if(b2){ctx.globalAlpha=a;ctx.drawImage(b2,0,0,W,H);ctx.globalAlpha=1}
-      prune(i);
-      if(j%15===0)$('pmsg').textContent='Armando el video... '+Math.round(j/(2*M)*100)+'%';
-    }
-    await sleep(150);rec.stop();await stopped;
-    return new Blob(ch,{type:rec.mimeType||mime});
-  }finally{src.remove();URL.revokeObjectURL(url)}
+async function boom(fr,ts){
+  const n=fr.length;if(n<2)throw new Error('Se capturaron muy pocos fotogramas ('+n+')');
+  const arr=await Promise.all(fr);if(arr.some(b=>!b))throw new Error('No se pudieron preparar los fotogramas');
+  const b0=await createImageBitmap(arr[0]),SW=b0.width,SH=b0.height;
+  const [W,H]=SW>SH?[1920,1080]:[1080,1920],cv=$('cv');cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d');ctx.imageSmoothingQuality='high';ctx.drawImage(b0,0,0,W,H);b0.close();
+  const mime=pickMime(),rec=new MediaRecorder(cv.captureStream(30),{mimeType:mime||undefined,videoBitsPerSecond:cur.q*1e6}),ch=[];
+  rec.ondataavailable=e=>e.data&&e.data.size&&ch.push(e.data);const stopped=new Promise(r=>rec.onstop=r);
+  const rel=ts.map(t=>(t-ts[0])*2),ida=rel[n-1],blend=n/(ida/1000)<22;
+  const dec={},gb=i=>dec[i]||(dec[i]=createImageBitmap(arr[i]));
+  const prune=i=>{for(const k in dec)if(Math.abs(k-i)>6){dec[k].then(b=>b.close&&b.close());delete dec[k]}};
+  const idx=t=>{let lo=0,hi=n-1;while(hi-lo>1){const m=(lo+hi)>>1;if(rel[m]<=t)lo=m;else hi=m}return lo};
+  const ST=1000/30,M=Math.floor(ida/ST);
+  rec.start();const tR=performance.now()+100;
+  for(let j=0;j<=2*M;j++){
+    const tt=j*ST,fw=tt<=ida,st=fw?tt:Math.max(0,2*ida-tt),i=idx(st),i2=Math.min(i+1,n-1);
+    const a=i2===i||rel[i2]===rel[i]?0:(st-rel[i])/(rel[i2]-rel[i]);
+    for(let q=0;q<=3;q++){const z=i+(fw?q:-q);if(z>=0&&z<n)gb(z)}gb(i2);
+    const b1=await gb(i),b2=blend&&a>.05&&i2!==i?await gb(i2):null;
+    const w=tR+tt-performance.now();if(w>0)await sleep(w);
+    ctx.globalAlpha=1;ctx.drawImage(b1,0,0,W,H);
+    if(b2){ctx.globalAlpha=a;ctx.drawImage(b2,0,0,W,H);ctx.globalAlpha=1}
+    prune(i);
+    if(j%15===0)$('pmsg').textContent='Armando el video... '+Math.round(j/(2*M)*100)+'%';
+  }
+  await sleep(150);rec.stop();await stopped;
+  return new Blob(ch,{type:rec.mimeType||mime});
 }
 
 // Resultado: guardar, compartir, descartar
