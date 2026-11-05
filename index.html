@@ -32,7 +32,7 @@ small{color:var(--mu)}li small{display:block}
 #exit{position:absolute;top:calc(env(safe-area-inset-top) + 10px);left:16px;width:auto;background:#000a;padding:10px 16px}
 #go{position:absolute;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom) + 20px);width:auto;background:#1f8f3a;color:#fff;font-size:22px;padding:18px;letter-spacing:.06em}
 #cmsg{position:absolute;left:16px;right:16px;bottom:120px;text-align:center}
-#pmsg{text-align:center;margin-top:35vh;font-size:20px}
+#pmsg{text-align:center;margin-top:16vh;font-size:20px}
 video.v{width:100%;max-height:62vh;background:#000;border-radius:14px}
 </style>
 </head>
@@ -158,8 +158,8 @@ $('go').onclick=async()=>{
     const iv=setInterval(()=>$('tm').textContent=((performance.now()-t0)/1000).toFixed(1),100);
     await sleep(cur.dur*1000);clearInterval(iv);rec.stop();await done;$('tm').hidden=true;
     const clip=new Blob(ch,{type:rec.mimeType||mime});
-    stopCam();show('proc');
-    fin=await boom(clip);
+    show('proc');$('pmsg').textContent='Preparando el video...';
+    fin=await boom(clip);stopCam();
     $('pv').src=URL.createObjectURL(fin);show('prev');
   }catch(e){alert('Error: '+e.message);stopCam();panel()}
   busy=false;
@@ -168,11 +168,19 @@ $('go').onclick=async()=>{
 // Boomerang: cámara lenta a la mitad de velocidad, ida y vuelta, 1080x1920 a 30 fps
 async function boom(blob){
   const src=document.createElement('video'),url=URL.createObjectURL(blob);
-  src.muted=true;src.playsInline=true;src.setAttribute('playsinline','');
-  src.style.cssText='position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none';
-  document.body.append(src);src.src=url;
+  src.muted=true;src.playsInline=true;src.setAttribute('playsinline','');src.preload='auto';
+  src.style.cssText='display:block;width:42%;margin:24px auto 0;border-radius:14px;background:#000';
+  $('proc').append(src);src.src=url;src.load();
   try{
-    await new Promise((ok,no)=>{src.onloadedmetadata=ok;src.onerror=()=>no(new Error('No se pudo leer el clip'))});
+    await new Promise((ok,no)=>{
+      let k=0;const t=setInterval(()=>{k++;
+        if(src.readyState>=1){clearInterval(t);ok()}
+        else if(k===6)src.play().catch(()=>{});
+        else if(k>=30){clearInterval(t);no(new Error('El clip no cargó (estado '+src.readyState+')'))}
+      },250);
+      src.onerror=()=>{clearInterval(t);no(new Error('No se pudo leer el clip'))};
+    });
+    src.pause();src.currentTime=0;
     const SW=src.videoWidth,SH=src.videoHeight,[W,H]=SW>SH?[1920,1080]:[1080,1920];
     const cap=document.createElement('canvas');cap.width=SW;cap.height=SH;const cc=cap.getContext('2d');
     const cv=$('cv');cv.width=W;cv.height=H;const ctx=cv.getContext('2d');ctx.imageSmoothingQuality='high';ctx.drawImage(src,0,0,W,H);
@@ -254,6 +262,7 @@ $('gclean').onclick=async()=>{
   cur.videos=cur.videos.filter(v=>!v.sent);save();gal();
 };
 
+addEventListener('unhandledrejection',e=>alert('Error: '+((e.reason&&e.reason.message)||e.reason)));
 home();
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 </script>
