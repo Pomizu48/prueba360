@@ -29,7 +29,7 @@ small{color:var(--mu)}li small{display:block}
 #cam{width:100%;height:100%;object-fit:cover;display:block}
 #cdn{position:absolute;inset:0;display:grid;place-items:center;font-size:38vw;font-weight:800;text-shadow:0 4px 40px #000}
 #tm{position:absolute;top:calc(env(safe-area-inset-top) + 14px);right:16px;background:#000a;padding:6px 14px;border-radius:10px;font-variant-numeric:tabular-nums}
-#exit{position:absolute;top:calc(env(safe-area-inset-top) + 10px);left:16px;width:auto;background:#000a;padding:10px 16px}
+#exit,#setb{position:absolute;top:calc(env(safe-area-inset-top) + 10px);width:auto;background:#000a;padding:10px 16px}#exit{left:16px}#setb{left:104px}
 #go{position:absolute;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom) + 20px);width:auto;background:#1f8f3a;color:#fff;font-size:22px;padding:18px;letter-spacing:.06em}
 #cmsg{position:absolute;left:16px;right:16px;bottom:120px;text-align:center}
 #pmsg{text-align:center;margin-top:16vh;font-size:20px}
@@ -38,32 +38,35 @@ video.v{width:100%;max-height:62vh;background:#000;border-radius:14px}
 </head>
 <body>
 <main id="home" class="screen">
-  <h1>Cabina 360 <small>v5</small></h1>
+  <h1>Cabina 360 <small>v6</small></h1>
   <div class="tabs"><button data-t="next">Próximamente</button><button data-t="live">En curso</button><button data-t="done">Completado</button></div>
   <ul id="list"></ul>
   <button class="p" id="new">+ Nuevo evento</button>
 </main>
 
 <section id="form" class="screen" hidden>
-  <h2>Nuevo evento</h2>
+  <h2 id="ft">Nuevo evento</h2>
   <label>Nombre del evento</label><input id="fn" autocomplete="off">
   <label>Fecha</label><input id="fd" type="date">
   <label>Cámara</label>
   <select id="fc"><option value="environment">Trasera</option><option value="ultra">Ultra gran angular</option><option value="user">Frontal</option></select>
   <label>Calidad del video</label>
   <select id="fq"><option value="15">Alta</option><option value="12">Media</option><option value="8">Baja</option></select>
-  <label>Duración de la grabación (segundos, máximo 6)</label><input id="fu" type="number" value="4.5" min="1" max="6" step="0.5" inputmode="decimal">
-  <label>Cuenta regresiva (segundos)</label><input id="fk" type="number" value="3" min="0" max="10" inputmode="numeric">
+  <label>Duración de la grabación (máximo 6 segundos)</label><select id="fu"></select>
+  <label>Cuenta regresiva</label><select id="fk"></select>
   <button class="p" id="fok">Crear evento</button>
   <button class="g" id="fcancel">Cancelar</button>
 </section>
 
 <section id="panel" class="screen" hidden>
   <h2 id="pn"></h2>
+  <p><small id="psum"></small></p>
   <div class="stat"><div><b id="nv">0</b>videos guardados</div><div><b id="ns">0</b>ya compartidos</div></div>
   <button class="p" id="toRec">Siguiente: grabar</button>
   <button id="toGal">Galería del evento</button>
+  <button id="toSet">Ajustes del evento</button>
   <button class="g" id="closeEv">Cerrar evento</button>
+  <button class="g" id="delEv" style="color:#ff6b6b">Eliminar evento</button>
   <button class="g" id="pback">Volver a eventos</button>
 </section>
 
@@ -71,6 +74,7 @@ video.v{width:100%;max-height:62vh;background:#000;border-radius:14px}
   <video id="cam" muted playsinline autoplay></video>
   <div id="cdn" hidden></div><div id="tm" hidden>0.0</div><p id="cmsg"></p>
   <button id="exit">Salir</button>
+  <button id="setb">Ajustes</button>
   <button id="go">GRABAR</button>
 </section>
 
@@ -113,18 +117,45 @@ function home(){
   l.forEach(e=>{const li=document.createElement('li');li.innerHTML='<b></b><small></small>';li.firstChild.textContent=e.name;li.lastChild.textContent=(e.date||'Sin fecha')+' · '+e.videos.length+' videos';li.onclick=()=>openEv(e.id);ul.append(li)});
 }
 function openEv(id){cur=evs.find(e=>e.id===id);if(cur.st==='next'){cur.st='live';save()}panel()}
-function panel(){show('panel');$('pn').textContent=cur.name;$('nv').textContent=cur.videos.length;$('ns').textContent=cur.videos.filter(v=>v.sent).length}
+const CN={environment:'Trasera',ultra:'Ultra gran angular',user:'Frontal'},QN={15:'Alta',12:'Media',8:'Baja'};
+function panel(){
+  show('panel');$('pn').textContent=cur.name;$('nv').textContent=cur.videos.length;$('ns').textContent=cur.videos.filter(v=>v.sent).length;
+  $('psum').textContent=(CN[cur.cam]||'Trasera')+' · calidad '+(QN[cur.q]||cur.q)+' · '+cur.dur+' s · cuenta regresiva '+cur.cd+' s';
+  $('closeEv').textContent=cur.st==='done'?'Reabrir evento':'Cerrar evento';
+}
 document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;home()});
-$('new').onclick=()=>{$('fn').value='';$('fd').value='';show('form')};
-$('fcancel').onclick=home;
+$('fu').innerHTML=Array.from({length:9},(_,i)=>{const v=2+i/2;return '<option value="'+v+'">'+v+' segundos</option>'}).join('');
+$('fk').innerHTML=Array.from({length:11},(_,i)=>'<option value="'+i+'">'+(i?i+' segundos':'Sin cuenta regresiva')+'</option>').join('');
+const rf=()=>({name:$('fn').value.trim(),date:$('fd').value,cam:$('fc').value,q:+$('fq').value||15,dur:Math.min(6,Math.max(1,+$('fu').value||4.5)),cd:Math.max(0,Math.round(+$('fk').value||0))});
+let editing=false,backTo='panel';
+function fillForm(e){
+  $('ft').textContent=e?'Ajustes del evento':'Nuevo evento';$('fok').textContent=e?'Guardar cambios':'Crear evento';
+  $('fn').value=e?e.name:'';$('fd').value=e?(e.date||''):'';$('fc').value=e?e.cam:'environment';
+  $('fq').value=String(e?e.q:15);$('fu').value=String(e?e.dur:4.5);$('fk').value=String(e?e.cd:3);
+}
+const leaveForm=()=>backTo==='rec'?toRec():panel();
+$('new').onclick=()=>{editing=false;fillForm(null);show('form')};
+$('toSet').onclick=()=>{editing=true;backTo='panel';fillForm(cur);show('form')};
+$('setb').onclick=()=>{if(busy)return;stopCam();editing=true;backTo='rec';fillForm(cur);show('form')};
+$('fcancel').onclick=()=>editing?leaveForm():home();
 $('fok').onclick=()=>{
-  const n=$('fn').value.trim();if(!n){$('fn').focus();return}
-  evs.unshift({id:Date.now(),name:n,date:$('fd').value,cam:$('fc').value,q:+$('fq').value,dur:Math.min(6,Math.max(1,+$('fu').value||4.5)),cd:Math.max(0,Math.round(+$('fk').value||0)),st:'next',videos:[]});
+  const o=rf();if(!o.name){$('fn').focus();return}
+  if(editing){Object.assign(cur,o);save();leaveForm();return}
+  evs.unshift({id:Date.now(),...o,st:'next',videos:[]});
   save();tab='next';home();
   if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
 };
 $('pback').onclick=home;
-$('closeEv').onclick=()=>{if(confirm('¿Cerrar este evento?')){cur.st='done';save();tab='done';home()}};
+$('closeEv').onclick=()=>{
+  if(cur.st==='done'){cur.st='live';save();panel();return}
+  if(confirm('¿Cerrar este evento?')){cur.st='done';save();tab='done';home()}
+};
+$('delEv').onclick=async()=>{
+  const pend=cur.videos.filter(v=>!v.sent).length;
+  if(!confirm('¿Eliminar "'+cur.name+'"?\n\nSe borrarán también sus '+cur.videos.length+' videos guardados en la app'+(pend?' (hay '+pend+' sin compartir)':'')+'. No se puede deshacer.'))return;
+  for(const v of cur.videos){try{await delV(v.id)}catch(e){}}
+  evs=evs.filter(e=>e.id!==cur.id);save();cur=null;home();
+};
 $('toRec').onclick=toRec;$('toGal').onclick=gal;$('gback').onclick=panel;
 
 // Cámara y grabación
