@@ -55,7 +55,9 @@ canvas{position:fixed;left:-9999px;top:0}
 <label for="mode">Cómo guardar los fotogramas</label>
 <select id="mode"><option value="jpeg">Comprimido (JPEG, usa poca memoria)</option><option value="bitmap">En memoria (más rápido, usa mucha memoria)</option></select>
 <label for="sc">Tamaño del boomerang</label>
-<select id="sc"><option value="1">Igual al clip (1080p)</option><option value="0.667">Reducido (720p)</option></select>
+<select id="sc"><option value="1">Igual al clip (1080p)</option><option value="0.667">Reducido (720p)</option><option value="up">Ampliar a 1080×1920 (para clips de 720p)</option></select>
+<label for="bl">Suavizar la cámara lenta</label>
+<select id="bl"><option value="0">No (fotogramas tal cual)</option><option value="1">Sí (mezclar fotogramas)</option></select>
 <button id="boom" disabled>Armar boomerang</button>
 <video id="outv" playsinline controls loop hidden></video>
 <button id="share" class="sec" hidden>Compartir el boomerang</button>
@@ -158,16 +160,22 @@ async function boomerang(){
   const T0 = performance.now();
   let src = null;
   try{
-    const mode = $('mode').value, sc = Number($('sc').value);
+    const mode = $('mode').value, blend = $('bl').value === '1', scv = $('sc').value;
     src = document.createElement('video');
     src.muted = true; src.playsInline = true; src.setAttribute('playsinline', '');
     src.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:.01;pointer-events:none';
     document.body.appendChild(src);
     src.src = URL.createObjectURL(clip);
     await new Promise((ok, no) => { src.onloadedmetadata = ok; src.onerror = () => no(new Error('No se pudo leer el clip')); });
-    const W = Math.round(src.videoWidth * sc / 2) * 2, H = Math.round(src.videoHeight * sc / 2) * 2;
+    const SW = src.videoWidth, SH = src.videoHeight;
+    let W, H;
+    if (scv === 'up'){ [W, H] = SW > SH ? [1920, 1080] : [1080, 1920]; }
+    else { const sc = Number(scv); W = Math.round(SW * sc / 2) * 2; H = Math.round(SH * sc / 2) * 2; }
+    const cap = document.createElement('canvas'); cap.width = SW; cap.height = SH;
+    const cctx = cap.getContext('2d');
     const cv = $('cv'); cv.width = W; cv.height = H;
     const ctx = cv.getContext('2d');
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(src, 0, 0, W, H);
     const mime = pickMime();
     const rec = new MediaRecorder(cv.captureStream(30), { mimeType: mime || undefined, videoBitsPerSecond: Number($('br').value) * 1e6 });
@@ -176,50 +184,59 @@ async function boomerang(){
     const stopped = new Promise(r => rec.onstop = r);
     const frames = [], ts = [];
 
-    // Adelante, a la mitad de velocidad
+    // 1) Captura de los fotogramas del clip (a la mitad de velocidad)
     const tF = performance.now();
     await new Promise((ok, no) => {
       const onFrame = () => {
         ts.push(performance.now());
-        ctx.drawImage(src, 0, 0, W, H);
-        if (mode === 'bitmap') frames.push(createImageBitmap(cv));
-        else frames.push(new Promise(r => cv.toBlob(r, 'image/jpeg', 0.92)));
+        cctx.drawImage(src, 0, 0);
+        if (mode === 'bitmap') frames.push(createImageBitmap(cap));
+        else frames.push(new Promise(r => cap.toBlob(r, 'image/jpeg', 0.92)));
         if (!src.ended) src.requestVideoFrameCallback(onFrame);
       };
       src.onended = ok;
       src.onerror = () => no(new Error('Error al reproducir el clip'));
-      rec.start();
       src.playbackRate = 0.5;
       src.play().then(() => src.requestVideoFrameCallback(onFrame)).catch(no);
     });
     const fwd = (performance.now() - tF) / 1000;
     const n = frames.length;
+    if (n < 2) throw new Error('El clip tiene muy pocos fotogramas');
     const clipFps = isFinite(src.duration) && src.duration > 0 ? (n / src.duration).toFixed(1) : '?';
-    log('Adelante: ' + n + ' fotogramas en ' + fwd.toFixed(1) + ' s (el clip trae unos ' + clipFps + ' fps reales)');
+    log('Captura: ' + n + ' fotogramas en ' + fwd.toFixed(1) + ' s (el clip trae unos ' + clipFps + ' fps reales, ' + SW + 'x' + SH + ')');
     const arr = await Promise.all(frames);
+    const rel = ts.map(t => t - ts[0]);
+    const idaMs = rel[n - 1];
+    log('Cámara lenta: ' + (n / (idaMs / 1000)).toFixed(1) + ' fotogramas por segundo antes de suavizar, ' + (idaMs / 1000).toFixed(1) + ' s por sentido');
 
-    // Reversa con los mismos tiempos que la ida
-    const rel = ts.map(t => t - ts[0]), idaMs = rel[n - 1];
-    log('Ida: ' + (n / (idaMs / 1000)).toFixed(1) + ' fotogramas por segundo mostrados, ' + (idaMs / 1000).toFixed(1) + ' s');
+    // 2) Armado: ida y vuelta a 30 fps, con mezcla opcional entre fotogramas
     const dec = {};
-    const getB = i => mode === 'bitmap' ? arr[i] : (dec[i] || (dec[i] = createImageBitmap(arr[i])));
-    const tR = performance.now() + 300; let late = 0;
-    for (let k = 0; k < n; k++){
-      const i = n - 1 - k;
-      for (let j = 1; j <= 4; j++) if (i - j >= 0) getB(i - j);
-      const b = await getB(i);
-      const wait = tR + (idaMs - rel[i]) - performance.now();
+    const getB = i => mode === 'bitmap' ? Promise.resolve(arr[i]) : (dec[i] || (dec[i] = createImageBitmap(arr[i])));
+    const prune = i => { for (const k in dec){ if (Math.abs(k - i) > 6){ dec[k].then(b => b.close && b.close()); delete dec[k]; } } };
+    const idx = t => { let lo = 0, hi = n - 1; while (hi - lo > 1){ const m = (lo + hi) >> 1; if (rel[m] <= t) lo = m; else hi = m; } return lo; };
+    const STEP = 1000 / 30, M = Math.floor(idaMs / STEP);
+    rec.start();
+    const tR = performance.now() + 200; let late = 0, blended = 0;
+    for (let j = 0; j <= 2 * M; j++){
+      const tt = j * STEP, fwdPart = tt <= idaMs;
+      const st = fwdPart ? tt : Math.max(0, 2 * idaMs - tt);
+      const i = idx(st), i2 = Math.min(i + 1, n - 1);
+      const a = i2 === i ? 0 : (st - rel[i]) / (rel[i2] - rel[i]);
+      if (mode !== 'bitmap'){ const dir = fwdPart ? 1 : -1; for (let q = 0; q <= 3; q++){ const z = i + dir * q; if (z >= 0 && z < n) getB(z); } getB(i2); }
+      const b1 = await getB(i);
+      const b2 = (blend && a > 0.05 && i2 !== i) ? await getB(i2) : null;
+      const wait = tR + tt - performance.now();
       if (wait > 0) await sleep(wait); else late++;
-      ctx.drawImage(b, 0, 0, W, H);
-      if (b.close) b.close();
-      delete dec[i];
+      ctx.globalAlpha = 1; ctx.drawImage(b1, 0, 0, W, H);
+      if (b2){ ctx.globalAlpha = a; ctx.drawImage(b2, 0, 0, W, H); ctx.globalAlpha = 1; blended++; }
+      if (mode !== 'bitmap') prune(i);
     }
     await sleep(150); rec.stop(); await stopped;
     finalBlob = new Blob(ch, { type: rec.mimeType || mime });
     const total = (performance.now() - T0) / 1000;
-    R['Boomerang (' + (mode === 'bitmap' ? 'memoria' : 'JPEG') + ', ' + W + 'x' + H + ')'] =
-      n * 2 + ' fotogramas | ' + mb(finalBlob.size) + ' | tiempo total ' + total.toFixed(1) + ' s | fotogramas tardíos en reversa: ' + late;
-    log('Boomerang listo: ' + mb(finalBlob.size) + ', tiempo total ' + total.toFixed(1) + ' s, fotogramas tardíos en reversa: ' + late);
+    R['Boomerang (' + (mode === 'bitmap' ? 'memoria' : 'JPEG') + ', ' + W + 'x' + H + ', mezcla ' + (blend ? 'sí' : 'no') + ')'] =
+      (2 * M + 1) + ' fotogramas | ' + mb(finalBlob.size) + ' | tiempo total ' + total.toFixed(1) + ' s | tardíos: ' + late + ' | mezclados: ' + blended;
+    log('Boomerang listo (' + W + 'x' + H + ', mezcla ' + (blend ? 'sí' : 'no') + '): ' + mb(finalBlob.size) + ', tiempo total ' + total.toFixed(1) + ' s, tardíos: ' + late + ', mezclados: ' + blended);
     const ov = $('outv');
     ov.onloadedmetadata = () => { if (isFinite(ov.duration)) log('El video final dura ' + ov.duration.toFixed(1) + ' s'); };
     ov.src = URL.createObjectURL(finalBlob); ov.hidden = false; $('share').hidden = false;
